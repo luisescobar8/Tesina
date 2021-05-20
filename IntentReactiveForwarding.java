@@ -70,7 +70,7 @@ import org.onosproject.net.config.basics.BasicLinkConfig;
 import org.onosproject.net.LinkKey;
 import org.onosproject.net.ConnectPoint;
 import org.onosproject.net.ElementId;
-import org.onosproject.net.PortNumber;
+//import org.onosproject.net.PortNumber;
 
 
 //traffic engineering
@@ -114,6 +114,17 @@ import java.util.Iterator;
 //read response
 import com.fasterxml.jackson.databind.JsonNode;
 
+
+// HTTP CLIENT TEST
+import javax.ws.rs.client.Client;
+import javax.ws.rs.client.ClientBuilder;
+import javax.ws.rs.client.Entity;
+import javax.ws.rs.core.MediaType;
+import javax.ws.rs.core.Response;
+
+
+//ARRAYS
+import java.util.Arrays;
 
 import java.util.EnumSet;
 
@@ -165,11 +176,26 @@ public class IntentReactiveForwarding {
     private static HashMap<String, List<String>> hashPossibleMalicious;
     private static List<String> values;
     private static int vecesEntro = 0;
+    private static boolean flag = false;
+    /** Enable use of builder from packet context to define flow treatment; default is false. */
+    static final boolean INHERIT_FLOW_TREATMENT_DEFAULT = false;
+    private boolean inheritFlowTreatment = INHERIT_FLOW_TREATMENT_DEFAULT;
+    
+    /** Configure Flow Timeout for installed flow rules; default is 10 sec. */
+    static final int FLOW_TIMEOUT_DEFAULT = 10;
+    private int flowTimeout = FLOW_TIMEOUT_DEFAULT;
+
+    /** Configure Flow Priority for installed flow rules; default is 10. */
+    static final int FLOW_PRIORITY_DEFAULT = 10;
+    private int flowPriority = FLOW_PRIORITY_DEFAULT;
+
+
     //get bandwidth value
     // private static BasicLinkConfig basicLinkConfig;
     // private static LinkKey getLinkKey;
     // private static ConnectPoint connectionPointSRC, connectionPointDST;
     // private static ElementId elementId;
+
 
     @Activate
     public void activate() {
@@ -223,8 +249,8 @@ public class IntentReactiveForwarding {
     @GET
     @Path("bandwidth/topology")
     @Produces(MediaType.APPLICATION_JSON)
-    public ObjectNode getTopologyBandwidth() {
-
+    public ObjectNode getTopologyBandwidth(String sourceAttacker, String destinationVictim) {
+        
         LinkService linkService = get(LinkService.class);
         HostService hostService = get(HostService.class);
         PortStatisticsService portStatisticsService = get(PortStatisticsService.class);
@@ -242,7 +268,7 @@ public class IntentReactiveForwarding {
             ObjectNode linkNode = mapper.createObjectNode()
                     .put("src", link.src().deviceId().toString())
                     .put("dst", link.dst().deviceId().toString())
-                    .put("bw", (srcBw + dstBw) / 2 );
+                    .put("bw", (srcBw + dstBw) / 2 );   
 
             linksNode.add(linkNode);
         }
@@ -252,12 +278,18 @@ public class IntentReactiveForwarding {
         ArrayNode edgesNode = mapper.createArrayNode();
         for (Host host: hostService.getHosts()){
             // unit: Kbps
-            ObjectNode hostNode = mapper.createObjectNode()
-                    .put("host", host.id().toString())
-                    .put("location", host.location().deviceId().toString())
-                    .put("bw", portStatisticsService.load(host.location()).rate() * 8 / 1000);
+            //guardar sourceAttacker y destination Victim en los edges para pasarlo al DIJKSTRA en python, 
+            // solo mandar los datos del source attacker y de la victima
+            String replaceHostID =  host.id().toString().replace("/None", "");  
+            if( sourceAttacker.equals(replaceHostID) || destinationVictim.equals(replaceHostID) ){   
 
-            edgesNode.add(hostNode);
+                ObjectNode hostNode = mapper.createObjectNode()
+                        .put("host", host.id().toString())
+                        .put("location", host.location().deviceId().toString())
+                        .put("bw", portStatisticsService.load(host.location()).rate() * 8 / 1000);
+
+                edgesNode.add(hostNode);
+            }
         }
 
         rootNode.set("edges", edgesNode);
@@ -269,6 +301,165 @@ public class IntentReactiveForwarding {
 
     }
 
+/**
+     * Get bandwidth from all links and edges.
+     *
+     * @return 200 OK
+     */
+    @GET
+    @Path("installRule/ports")
+    @Produces(MediaType.APPLICATION_JSON)
+    public void installRuleInSwitches(PortNumber sourcePortNumber, DeviceId sourceDeviceID , PacketContext context) {
+        
+       //configuracion de switches para redirigir trafico
+        Ethernet inPkt = context.inPacket().parsed();
+        // log.info("sourcePortNumber en INSTALLRULE   {} ",sourcePortNumber);
+        // //log.info("destinationPortNumber en INSTALLRULE  {} ",destinationPortNumber);
+        // log.info("contextINPACKET {}",  context.inPacket().receivedFrom().port() );
+        // log.info("sourceMACINPACKET {}",  inPkt.getSourceMAC() );
+        // log.info("destinationmacINPACKET {}",  inPkt.getDestinationMAC() );
+        TrafficTreatment treatment;
+        if (inheritFlowTreatment) {
+            treatment = context.treatmentBuilder()
+                    .setOutput(sourcePortNumber)
+                    .build();
+        } else {
+            treatment = DefaultTrafficTreatment.builder()
+                    .setOutput(sourcePortNumber)
+                    .build();
+        }
+
+
+       // if (inheritFlowTreatment) {
+       //      treatment = context.treatmentBuilder()
+       //              .setOutput(destinationPortNumber)
+       //              .build();
+       //  } else {
+       //      treatment = DefaultTrafficTreatment.builder()
+       //              .setOutput(destinationPortNumber)
+       //              .build();
+       //  }
+
+
+        // TrafficSelector objectiveSelector = DefaultTrafficSelector.builder()
+        //                 .matchEthSrc(srcId.mac()).matchEthDst(dstId.mac()).build();
+
+
+        TrafficSelector selectorBuilder = DefaultTrafficSelector.builder()
+                .matchEthSrc(inPkt.getSourceMAC()).matchEthDst(inPkt.getDestinationMAC()).build();
+
+        ForwardingObjective forwardingObjective = DefaultForwardingObjective.builder()
+                .withSelector(selectorBuilder)
+                .withTreatment(treatment)
+                .withPriority(120)
+                .withFlag(ForwardingObjective.Flag.VERSATILE)
+                .fromApp(appId)
+                .makeTemporary(60)
+                .add();
+
+                //link.src().deviceId()
+
+        flowObjectiveService.forward(sourceDeviceID,
+                                     forwardingObjective);
+       
+       
+    }
+
+
+
+
+
+   /**
+     * Get bandwidth from all links and edges.
+     *
+     * @return 200 OK
+     */
+    @GET
+    @Path("switches/ports")
+    @Produces(MediaType.APPLICATION_JSON)
+    public ObjectNode getSwitchesPorts(String switchesHop[], PacketContext context) {
+        
+        LinkService linkService = get(LinkService.class);
+        HostService hostService = get(HostService.class);
+        PortStatisticsService portStatisticsService = get(PortStatisticsService.class);
+
+        ObjectMapper mapper = new ObjectMapper();
+        ObjectNode rootNode = mapper.createObjectNode();
+
+        ArrayNode linksNode = mapper.createArrayNode();
+        for( int i = 0; i < switchesHop.length-1; i++ ){
+            for (Link link: linkService.getActiveLinks()){                    
+                //si el primer switch por el que hay que ir es igual al switch que se esta recorriendo
+                //para optener los puertos que conectan los switches por los que tiene que viajar el flujo
+                if( switchesHop[i].contains( link.src().deviceId().toString() ) &&
+                    switchesHop[i+1].contains( link.dst().deviceId().toString() ) ){
+
+                    long srcBw = portStatisticsService.load(link.src()).rate() * 8 / 1000;
+                    long dstBw = portStatisticsService.load(link.dst()).rate() * 8 / 1000;
+
+                    // unit: Kbps
+                    ObjectNode linkNode = mapper.createObjectNode()
+                            .put("src", link.src().deviceId().toString())
+                            .put("srcport", link.src().port().toString())
+                            .put("dst", link.dst().deviceId().toString())
+                            .put("dstport", link.dst().port().toString())
+                            .put("bw", (srcBw + dstBw) / 2 );
+                            //link.src().deviceId()
+                    installRuleInSwitches(link.src().port(), link.src().deviceId() ,context);   
+
+                    // log.info("SRC"+ link.src().deviceId().toString()  );
+                    // log.info( "SRCPORT"+link.src().port().toString()   );                   
+                    // log.info( "DST"+link.dst().deviceId().toString()   );
+                    // log.info( "DSTPORT"+link.dst().port().toString()   );
+                    linksNode.add(linkNode);
+
+                }    
+            }
+            //para ir en la iteracion del ultimo
+            if( i == switchesHop.length -2 ){
+                ArrayNode edgesNode = mapper.createArrayNode();
+                for (Host host: hostService.getHosts()){
+                    // unit: Kbps
+                    //guardar sourceAttacker y destination Victim en los edges para pasarlo al DIJKSTRA en python, 
+                    // solo mandar los datos del source attacker y de la victima
+                    //String replaceHostID =  host.id().toString().replace("/None", "");
+                    //log.info( "HOSTIDDDDDDDDDD "+host.id().toString() );  
+                    if( host.location().deviceId().toString().equals( switchesHop[i+1]   ) &&
+                        host.id().toString().equals( "00:00:00:00:00:01/None" ) ){   
+
+                        ObjectNode hostNode = mapper.createObjectNode()
+                                .put("host", host.id().toString())
+                                .put("location", host.location().deviceId().toString())
+                                .put("bw", portStatisticsService.load(host.location()).rate() * 8 / 1000);
+
+                                log.info( "Host final "+host.id().toString()  );
+                                log.info( "Location host SWITCH FINAL"+host.location().deviceId().toString()  );
+                                log.info( "Puerto entre Host y Switch final "+host.location().port() );
+                        
+                        installRuleInSwitches(host.location().port(), host.location().deviceId() ,context);
+
+                        edgesNode.add(hostNode);
+                        rootNode.set("edges", edgesNode);
+                    }
+                }
+
+            }
+        }
+        //para obtener el puerto de [HostDestino con switchFinal]
+        // Host hostDestination;
+        // hostDestination.getLocation().deviceId(); //getport
+        // link.src().port()
+        // //puertoHost, ultimo deviceId
+        // installRuleInSwitches(link.src().port(), link.src().deviceId() ,context);   
+
+        rootNode.set("portsLinks", linksNode);
+
+        return rootNode;
+
+    }
+
+
+
 
 
          /**
@@ -277,7 +468,7 @@ public class IntentReactiveForwarding {
          * @param eth ethernet packet
          */
         @Override
-        public void process(PacketContext context) {
+        public synchronized void process(PacketContext context) {
 
             // Stop processing if the packet has been handled, since we
             // can't do any more to it.
@@ -303,13 +494,7 @@ public class IntentReactiveForwarding {
             //obtiene los links, el 1, y el src
             //log.info("getTopoBand {}",getTopologyBandwidth().get("links").get(1).get("src"));
             //log.info("getTopoBand {}",getTopologyBandwidth().get("links"));
-            log.info("getTopoBand {}",getTopologyBandwidth().getClass());
-            
-            
-            //log.info("\n size links {}",getTopologyBandwidth().getHosts() );
 
-       
-  
 
             // Otherwise forward and be done with it.
             setUpConnectivity(context, srcId, dstId);
@@ -339,6 +524,9 @@ public class IntentReactiveForwarding {
                 dstport = udp.getDestinationPort();
                 protocolS = "UDP";
             }
+
+
+           
 
 
            //log.info("SRC MAC: "+ethPkt.getSourceMAC()+" DSTMAC: "+ethPkt.getDestinationMAC());
@@ -376,17 +564,60 @@ public class IntentReactiveForwarding {
                 values.add("First time added");
                 //la llave es la ip origen    
                 hashPossibleMalicious.put(srcips, values);
-                log.info("SIZE "+hashPossibleMalicious.size());
+                //log.info("SIZE "+hashPossibleMalicious.size());
                 int i = 0;
                 // to get the arraylist values of the given hashmap key
                 for( String value : values) {
                     //System.out.println(""+i+" "+hm.get(srcips).get(i));
-                    log.info(""+i+" "+hashPossibleMalicious.get(srcips).get(i));
+                    //log.info(""+i+" "+hashPossibleMalicious.get(srcips).get(i));
                     i++;
                 }
 
                 //AGREGAR PARTE DE CODIGO DE REDIRIGIR ESTE FLUJO MALIGNO A LOS CANALES MENOS USADOS
 
+
+                //para mandar los links, edges, bw, de la topologia
+                //mando la mac source del atacante y de la victima
+                String jsonFlow = "" + getTopologyBandwidth(ethPkt.getSourceMAC().toString(), ethPkt.getDestinationMAC().toString());
+                String auxResponse = "";
+
+                try {
+                    Client client = ClientBuilder.newClient();
+                    //String response = client.target("http://10.0.2.15:9001/predict").request().get(String.class);
+                    String response = client.target("http://192.168.1.103:8081/shortestPath/").request().post(Entity.entity(jsonFlow,MediaType.APPLICATION_JSON),String.class);
+                    auxResponse = response;
+                    if (!response.equals("incomplete")){
+                        log.info("Response from server: {}",response);
+                    }
+                } catch (Exception e) {
+                    log.error("Error talking to Classifier API.");
+                }
+
+                
+                log.info("getTopoBand {}",getTopologyBandwidth(  ethPkt.getSourceMAC().toString(), ethPkt.getDestinationMAC().toString()  ));
+                String formatedResponse = auxResponse.replace("[", "").replace("]","").replace(",","").replace("\"", "");
+                
+                //si la longitud de la cadena es par, (longitud / 2) -1 = numSwitchesPorPasar
+                int numSwitches = 0;
+
+                String switchesHop[] = formatedResponse.split(" "); 
+                log.info("AUXILIAR "+ Arrays.toString(switchesHop));  
+                //log.info("Length de switchesHOP {}", switchesHop.length );
+
+                
+                //obtiene los puertos de los switches por los que tiene que ir
+                //y despues llama a una funcion para instalar las reglas 
+                getSwitchesPorts(switchesHop, context);
+
+
+                
+
+
+
+
+
+
+  
                // Agregar regla de flujo con IDLE TIMEOUT Y HARDTIMEOUT ( esto aun no funciona)
                 // FlowRule transitFlowRule = DefaultFlowRule.builder()
                 //     .forDevice(this.data().deviceId())
