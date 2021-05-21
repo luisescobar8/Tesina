@@ -264,6 +264,8 @@ import static org.slf4j.LoggerFactory.getLogger;
 import java.util.Timer;
 import java.util.TimerTask;
 
+import org.onlab.packet.IpAddress;
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 
@@ -309,6 +311,22 @@ public class intentBasedNetworking extends AbstractWebResource {
                                                                             IntentState.WITHDRAWING,
                                                                             IntentState.WITHDRAW_REQ);
     //////////////
+
+//////////////////////////MODIFICACIONES MARCELO /////////////////////////////////////
+
+////////////////////
+    private static final DeviceId mirrorDeviceID = DeviceId.deviceId("of:0000000000000065");
+    private PortNumber mirrorPortNumber = PortNumber.portNumber(1);  // can change
+    private static final PortNumber PktCollectorPortNumber = PortNumber.portNumber(1); // port to which the flow collector is connected to
+    private static final PortNumber testingPort = PortNumber.portNumber(7); // eliminate
+
+    // private static final EnumSet<IntentState> WITHDRAWN_STATES = EnumSet.of(IntentState.WITHDRAWN,
+    //                                                                         IntentState.WITHDRAWING,
+    //                                                                         IntentState.WITHDRAW_REQ);
+    //////////////
+ 
+ ///////////////////////MODIFICACIONES MARCELO ///////////////////////////////////////   
+
 
     private ReactivePacketProcessor processor = new ReactivePacketProcessor();
 
@@ -379,6 +397,7 @@ public class intentBasedNetworking extends AbstractWebResource {
     private static boolean flag = false;
     private static Timer timerHash = new Timer();
     private static long timeoutHashMap = 20_000; // milliseconds
+    private boolean isEndDevice = false;
     // /** Enable use of builder from packet context to define flow treatment; default is false. */
     // static final boolean INHERIT_FLOW_TREATMENT_DEFAULT = false;
     // private boolean inheritFlowTreatment = INHERIT_FLOW_TREATMENT_DEFAULT;
@@ -416,7 +435,7 @@ public class intentBasedNetworking extends AbstractWebResource {
         flowRuleService.removeFlowRulesById(appId);
         packetService.removeProcessor(processor);
         topologyService.removeListener(topologyListener);
-        blackHoleExecutor.shutdown();
+        //blackHoleExecutor.shutdown();
         blackHoleExecutor = null;
         processor = null;
         log.info("Stopped");
@@ -651,38 +670,67 @@ public class intentBasedNetworking extends AbstractWebResource {
 
         ArrayNode linksNode = mapper.createArrayNode();
         for (Link link: linkService.getActiveLinks()){
+            //if para evitar obtener su link device 65 porque se usa para mirroring /////////////////////
+            if( !link.src().deviceId().toString().contains("of:0000000000000065") && 
+                !link.dst().deviceId().toString().contains("of:0000000000000065")) {
+                long srcBw = portStatisticsService.load(link.src()).rate() * 8 / 1000;
+                long dstBw = portStatisticsService.load(link.dst()).rate() * 8 / 1000;
 
-            long srcBw = portStatisticsService.load(link.src()).rate() * 8 / 1000;
-            long dstBw = portStatisticsService.load(link.dst()).rate() * 8 / 1000;
+                // unit: Kbps
+                ObjectNode linkNode = mapper.createObjectNode()
+                        .put("src", link.src().deviceId().toString())
+                        .put("dst", link.dst().deviceId().toString())
+                        .put("bw", (srcBw + dstBw) / 2 );   
 
-            // unit: Kbps
-            ObjectNode linkNode = mapper.createObjectNode()
-                    .put("src", link.src().deviceId().toString())
-                    .put("dst", link.dst().deviceId().toString())
-                    .put("bw", (srcBw + dstBw) / 2 );   
 
-            linksNode.add(linkNode);
+                linksNode.add(linkNode);
+            }
         }
 
         rootNode.set("links", linksNode);
 
+
         ArrayNode edgesNode = mapper.createArrayNode();
+        //para sacar primero al atacante
         for (Host host: hostService.getHosts()){
-            // unit: Kbps
+             // unit: Kbps
             //guardar sourceAttacker y destination Victim en los edges para pasarlo al DIJKSTRA en python, 
             // solo mandar los datos del source attacker y de la victima
-            String replaceHostID =  host.id().toString().replace("/None", "");  
-            if( sourceAttacker.equals(replaceHostID) || destinationVictim.equals(replaceHostID) ){   
+            //busca la ubicacion del src y su switch origen, y del dst y su switch origen
+            String replaceHostID =  host.id().toString().replace("/None", ""); 
+
+            if( sourceAttacker.equals( host.id().toString() ) ){   
 
                 ObjectNode hostNode = mapper.createObjectNode()
                         .put("host", host.id().toString())
                         .put("location", host.location().deviceId().toString())
                         .put("bw", portStatisticsService.load(host.location()).rate() * 8 / 1000);
+                        // log.info( "hostttttttttt {} ", host.id().toString()  );
+                        // log.info( "locationnnnnn {}", host.location().deviceId().toString());
 
                 edgesNode.add(hostNode);
             }
         }
+    //para sacar la victima al final
+        for (Host host: hostService.getHosts()){
+             // unit: Kbps
+            //guardar sourceAttacker y destination Victim en los edges para pasarlo al DIJKSTRA en python, 
+            // solo mandar los datos del source attacker y de la victima
+            //busca la ubicacion del src y su switch origen, y del dst y su switch origen
+            String replaceHostID =  host.id().toString().replace("/None", ""); 
 
+            if( destinationVictim.equals( host.id().toString() ) ){   
+
+                ObjectNode hostNode = mapper.createObjectNode()
+                        .put("host", host.id().toString())
+                        .put("location", host.location().deviceId().toString())
+                        .put("bw", portStatisticsService.load(host.location()).rate() * 8 / 1000);
+                        // log.info( "hostttttttttt {} ", host.id().toString()  );
+                        // log.info( "locationnnnnn {}", host.location().deviceId().toString());
+
+                edgesNode.add(hostNode);
+            }
+        }
         rootNode.set("edges", edgesNode);
         //log.info("Roooteeeeeeeeeeee Node\n {}",rootNode);
 
@@ -700,26 +748,36 @@ public class intentBasedNetworking extends AbstractWebResource {
     // @GET
     // @Path("installRule/ports")
     // @Produces(MediaType.APPLICATION_JSON)
-    public void installRuleInSwitches(PortNumber sourcePortNumber, DeviceId sourceDeviceID , PacketContext context) {
+    ///BORRAAAAAAAAAR DEL PACKETCONTEXT
+    public void installRuleInSwitches(PortNumber sourcePortNumber, DeviceId sourceDeviceID , 
+                            HostId hostsrcId, HostId hostdstId, boolean isEndDevice ) {
         
        //configuracion de switches para redirigir trafico
-        Ethernet inPkt = context.inPacket().parsed();
+        //Ethernet inPkt = context.inPacket().parsed();
         // log.info("sourcePortNumber en INSTALLRULE   {} ",sourcePortNumber);
         // //log.info("destinationPortNumber en INSTALLRULE  {} ",destinationPortNumber);
         // log.info("contextINPACKET {}",  context.inPacket().receivedFrom().port() );
         // log.info("sourceMACINPACKET {}",  inPkt.getSourceMAC() );
         // log.info("destinationmacINPACKET {}",  inPkt.getDestinationMAC() );
-        TrafficTreatment treatment;
-        if (inheritFlowTreatment) {
-            treatment = context.treatmentBuilder()
-                    .setOutput(sourcePortNumber)
-                    .build();
-        } else {
-            treatment = DefaultTrafficTreatment.builder()
-                    .setOutput(sourcePortNumber)
-                    .build();
-        }
+        //
+        TrafficTreatment treatment = null;  
+        if( isEndDevice == false ){
+            //log.info("Entra a treatment false  {}",isEndDevice);
+                          
+                treatment = DefaultTrafficTreatment.builder()
+                        .setOutput(sourcePortNumber)
+                        .build();       
 
+        }
+        else if( isEndDevice == true ) {
+            log.info("Entra a treatment true  {}",isEndDevice);
+            //TrafficTreatment treatment;          
+                treatment = DefaultTrafficTreatment.builder()
+                        .setOutput(sourcePortNumber)
+                        .setOutput(mirrorPortNumber)
+                        .build();    
+        }
+     
 
        // if (inheritFlowTreatment) {
        //      treatment = context.treatmentBuilder()
@@ -735,9 +793,9 @@ public class intentBasedNetworking extends AbstractWebResource {
         // TrafficSelector objectiveSelector = DefaultTrafficSelector.builder()
         //                 .matchEthSrc(srcId.mac()).matchEthDst(dstId.mac()).build();
 
-
+       
         TrafficSelector selectorBuilder = DefaultTrafficSelector.builder()
-                .matchEthSrc(inPkt.getSourceMAC()).matchEthDst(inPkt.getDestinationMAC()).build();
+                .matchEthSrc(hostsrcId.mac()).matchEthDst(hostdstId.mac()).build();
 
         ForwardingObjective forwardingObjective = DefaultForwardingObjective.builder()
                 .withSelector(selectorBuilder)
@@ -768,7 +826,7 @@ public class intentBasedNetworking extends AbstractWebResource {
     // @GET
     // @Path("switches/ports")
     // @Produces(MediaType.APPLICATION_JSON)
-    public ObjectNode getSwitchesPorts(String switchesHop[], PacketContext context, String destinationMac) {
+    public ObjectNode getSwitchesPorts(String switchesHop[], HostId hostsrcId, HostId hostdstId, String destinationMac) {
         
         LinkService linkService = get(LinkService.class);
         HostService hostService = get(HostService.class);
@@ -776,12 +834,12 @@ public class intentBasedNetworking extends AbstractWebResource {
 
         ObjectMapper mapper = new ObjectMapper();
         ObjectNode rootNode = mapper.createObjectNode();
-
+        isEndDevice = false;
         ArrayNode linksNode = mapper.createArrayNode();
         for( int i = 0; i < switchesHop.length-1; i++ ){
             for (Link link: linkService.getActiveLinks()){                    
                 //si el primer switch por el que hay que ir es igual al switch que se esta recorriendo
-                //para optener los puertos que conectan los switches por los que tiene que viajar el flujo
+                //para obtener los puertos que conectan los switches por los que tiene que viajar el flujo
                 if( switchesHop[i].contains( link.src().deviceId().toString() ) &&
                     switchesHop[i+1].contains( link.dst().deviceId().toString() ) ){
 
@@ -796,7 +854,8 @@ public class intentBasedNetworking extends AbstractWebResource {
                             .put("dstport", link.dst().port().toString())
                             .put("bw", (srcBw + dstBw) / 2 );
                             //link.src().deviceId()
-                    installRuleInSwitches(link.src().port(), link.src().deviceId() ,context);   
+                    installRuleInSwitches(link.src().port(), link.src().deviceId() ,hostsrcId, hostdstId, isEndDevice);   
+
 
                     // log.info("SRC"+ link.src().deviceId().toString()  );
                     // log.info( "SRCPORT"+link.src().port().toString()   );                   
@@ -809,6 +868,7 @@ public class intentBasedNetworking extends AbstractWebResource {
             //para ir en la iteracion del ultimo
             if( i == switchesHop.length -2 ){
                 ArrayNode edgesNode = mapper.createArrayNode();
+                isEndDevice = true;
                 for (Host host: hostService.getHosts()){
                     // unit: Kbps
                     //guardar sourceAttacker y destination Victim en los edges para pasarlo al DIJKSTRA en python, 
@@ -817,7 +877,7 @@ public class intentBasedNetworking extends AbstractWebResource {
                     //log.info( "HOSTIDDDDDDDDDD "+replaceHostID ); 
                     //log.info("Destination Mac   "+ destinationMac); 
                     if( host.location().deviceId().toString().equals( switchesHop[i+1]   ) &&
-                        replaceHostID.toString().equals( destinationMac ) ){   
+                        host.id().toString().equals( destinationMac ) ){   
 
                         ObjectNode hostNode = mapper.createObjectNode()
                                 .put("host", host.id().toString())
@@ -825,10 +885,11 @@ public class intentBasedNetworking extends AbstractWebResource {
                                 .put("bw", portStatisticsService.load(host.location()).rate() * 8 / 1000);
 
                                 log.info( "Host final "+host.id().toString()  );
-                                log.info( "Location host switch final "+host.location().deviceId().toString()  );
-                                log.info( "Puerto entre Host destino y Switch final "+host.location().port() );
+                                // log.info( "Location host switch final "+host.location().deviceId().toString()  );
+                                // log.info( "Puerto entre Host destino y Switch final "+host.location().port() );
+                        //agregar variable tipo booleano
                         
-                        installRuleInSwitches(host.location().port(), host.location().deviceId() ,context);
+                        installRuleInSwitches(host.location().port(), host.location().deviceId() ,hostsrcId, hostdstId, isEndDevice );
 
                         edgesNode.add(hostNode);
                         rootNode.set("edges", edgesNode);
@@ -850,33 +911,20 @@ public class intentBasedNetworking extends AbstractWebResource {
 
     }
 
-
-
-
-
-
-
-
-
-
-
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////        
-
-
-
-
-
-
 
 
         @Override
         public void process(PacketContext context) {
             // Stop processing if the packet has been handled, since we
             // can't do any more to it.
-
+/*
             if (context.isHandled()) {
                 return;
             }
+*/
+          
+            
 
             InboundPacket pkt = context.inPacket();
             Ethernet ethPkt = pkt.parsed();
@@ -923,6 +971,7 @@ public class intentBasedNetworking extends AbstractWebResource {
                 flood(context, macMetrics);
                 return;
             }
+        
 
             // Are we on an edge switch that our destination is on? If so,
             // simply forward out to the destination and bail.
@@ -955,39 +1004,131 @@ public class intentBasedNetworking extends AbstractWebResource {
                 return;
             }
 
+            //MITIGATIOOOOOOOOOON METHOD
+            mitigation();
             
                         // Otherwise forward and be done with it.
             installRule(context, path.src().port(), macMetrics);
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-            HostId srcId = HostId.hostId(ethPkt.getSourceMAC());
-            HostId dstId = HostId.hostId(ethPkt.getDestinationMAC());
 
 
-            Ethernet packeteth = context.inPacket().parsed();
+        }
 
-            DeviceId deviceId = context.inPacket().receivedFrom().deviceId();
-            IPv4 ipv4 = (IPv4) packeteth.getPayload();
-            int srcip = ipv4.getSourceAddress();
-            String srcips = Ip4Address.valueOf(srcip).toString();//added
-            int dstip = ipv4.getDestinationAddress();
-            String dstips = Ip4Address.valueOf(dstip).toString(); //added
-            byte proto = ipv4.getProtocol();
-            int srcport = 0;
-            int dstport = 0;
-            
-            String protocolS = "TCP";
 
-            if (proto==6) {
-                TCP tcp = (TCP) ipv4.getPayload();
-                srcport = tcp.getSourcePort();
-                dstport = tcp.getDestinationPort();
-            } else {
-                UDP udp = (UDP) ipv4.getPayload();
-                srcport = udp.getSourcePort();
-                dstport = udp.getDestinationPort();
-                protocolS = "UDP";
+        private void mitigation(){
+            // HostId srcId = HostId.hostId(ethPkt.getSourceMAC());
+            // HostId dstId = HostId.hostId(ethPkt.getDestinationMAC());
+
+            // Ethernet packeteth = context.inPacket().parsed();
+
+            // DeviceId deviceId = context.inPacket().receivedFrom().deviceId();
+            // try{
+            //     IPv4 ipv4 = (IPv4) packeteth.getPayload();
+            //     int srcip = ipv4.getSourceAddress();
+            //     String srcips = Ip4Address.valueOf(srcip).toString();//added
+            //     int dstip = ipv4.getDestinationAddress();
+            //     String dstips = Ip4Address.valueOf(dstip).toString(); //added
+            //     byte proto = ipv4.getProtocol();
+            //     int srcport = 0;
+            //     int dstport = 0;
+                
+            //     String protocolS = "TCP";
+
+            //     if (proto==6) {
+            //         TCP tcp = (TCP) ipv4.getPayload();
+            //         srcport = tcp.getSourcePort();
+            //         dstport = tcp.getDestinationPort();
+            //     } else {
+            //         UDP udp = (UDP) ipv4.getPayload();
+            //         srcport = udp.getSourcePort();
+            //         dstport = udp.getDestinationPort();
+            //         protocolS = "UDP";
+            //     }
+            // }catch(Exception e){
+            //     log.info("EXCEPTION");
+            // }
+
+////////////////ABRAHAM TRY CATCH /////////
+    String srcips = ""; //////////////////////hay que revisar esto
+    String dstips = "";
+    String key = srcips + " - " + dstips;
+    //Comunicar con el IDS 
+    //normal es default, en caso que ocurra error con ids, parseo, etc
+    String label = "normal";
+        try {
+
+        Client client = ClientBuilder.newClient();
+        //String response = client.target("http://192.168.0.101:9001/predict").request().post(Entity.entity(jsonFlow1,MediaType.APPLICATION_JSON),String.class);
+        String response = client.target("http://192.168.1.103:9001/respond").request().get(String.class);
+        //log.warn("RESPUESTA \n{}",response);
+        /*
+        int i =0;
+        for(i=0;i<response.length();i++){
+            log.info("{} {}",i,response.charAt(i));
+        }
+        */
+            //PROCESS THE STRING, get the data from the json string
+            try{
+                //The data starts after the last '{' and ends before the first '}'
+                int rStart = response.lastIndexOf('{')+1;
+                int rEnd = response.indexOf('}');
+                String newResponse = response.substring(rStart,rEnd).trim();
+                log.info("NEW RESPONSE {}",newResponse);
+                boolean entered = false; //control variable
+                //Si el dicc no tiene nada, mantener normal,
+                //else procesar las llaves
+                if(newResponse.length() > 0){ 
+                    String parts[] = newResponse.split(",");
+                    for(String part: parts){
+                        String data[]= part.split(":");
+                        //Extraer el key y el value, remover los ""
+                        String srcdstip = data[0].trim();
+                        srcdstip = srcdstip.substring(1,srcdstip.length()-1);
+                        String val = data[1].trim();
+                        val = val.substring(1,val.length()-1);
+                        //Para debug
+                        log.info("AN ENTRY X{}X - Y{}Y",srcdstip,val);
+                        log.info("LOOKING FOR Z{}Z",key);
+                        if(key.equals(srcdstip)){ //The current key is in dic
+                            log.info("FOUND MATCHING IP");
+                            entered = true;
+                            label = val;
+                            break;
+                        }
+                    }
+                }
+                log.info("RESULT entered - {}, label - {}",entered,label);
+
+            }catch(Exception e){
+                log.warn("problem parsing response");
             }
+        
 
+        } catch (Exception e) {
+            log.error("Error communicating to IDS service.");
+            //System.out.println ("Error communicating to IDS service.");
+        }
+            
+            HostService hostService = get(HostService.class);
+            HostId hostsrcId = null;
+            HostId hostdstId = null;
+            //srcId.requestMac(ipAddress);
+            String hostSrcIP = "10.0.0.5";
+            String hostDestinationIP = "10.0.0.1";
+            Set<Host> hosts = hostService.getHostsByIp(IpAddress.valueOf("10.0.0.5"));
+            //if (hosts.isEmpty()) continue;
+                for (Host host: hosts) {
+                    hostsrcId = host.id();
+                    //log.info("asfadfasdfasdfas {}",hostsrcId);
+                }
+
+            hosts = hostService.getHostsByIp(IpAddress.valueOf("10.0.0.1"));
+                
+                for (Host host: hosts) {
+                    hostdstId = host.id();
+                }
+            
+
+            //hosts = hostService.getHostsByIp(IpAddress.valueOf(dst));
 
             //log.info("SRC MAC: "+ethPkt.getSourceMAC()+" DSTMAC: "+ethPkt.getDestinationMAC());
             //System.out.println("srcip: "+srcip+" srcport: "+srcport);
@@ -1003,28 +1144,28 @@ public class intentBasedNetworking extends AbstractWebResource {
 
             //Si el flujo es atacante, y no esta en el hash
             //Redirigir a los canales menos usados en terminos de bandwidth, instalar reglas HARDTIMEOUT e IDLE
-            if(ethPkt.getSourceMAC().toString().equals("00:00:00:00:00:04") && 
-                ethPkt.getDestinationMAC().toString().equals("00:00:00:00:00:01") &&
-                hashPossibleMalicious.containsKey(srcips) == false ){
-                log.info("The attacker is "+ethPkt.getSourceMAC().toString());
-
+            if( hostSrcIP.contains("10.0.0.5") && 
+                hostDestinationIP.contains("10.0.0.1") &&
+                hashPossibleMalicious.containsKey(hostSrcIP) == false ){
+                //log.info("The attacker is "+ethPkt.getSourceMAC().toString());
+                log.info("The attacker IP is "+hostsrcId);
                 //Agregar a hashmap, para que la 2da vez que pase sea mitigado
                 vecesEntro = vecesEntro + 1;
                 //log.info("vecesEntro "+vecesEntro);
                 //ipdestino
-                values.add(dstips);
+                values.add(hostDestinationIP);
                 //mac origen
-                values.add(ethPkt.getSourceMAC().toString());
+                //values.add(ethPkt.getSourceMAC().toString());
                 //mac destino
-                values.add(ethPkt.getDestinationMAC().toString());
+                //values.add(ethPkt.getDestinationMAC().toString());
                 //puerto origen
-                values.add(""+srcport);
+                //values.add(""+srcport);
                 //puerto destino
-                values.add(""+dstport);
+                //values.add(""+dstport);
                 //colocar 1 vez agregado
                 values.add("First time added");
                 //la llave es la ip origen    
-                hashPossibleMalicious.put(srcips, values);
+                hashPossibleMalicious.put(hostSrcIP, values);
                 //log.info("SIZE "+hashPossibleMalicious.size());
                 int i = 0;
                 // to get the arraylist values of the given hashmap key
@@ -1037,42 +1178,67 @@ public class intentBasedNetworking extends AbstractWebResource {
 
                 //AGREGAR PARTE DE CODIGO DE REDIRIGIR ESTE FLUJO MALIGNO A LOS CANALES MENOS USADOS
 
-
+                log.info(" SRCID "+ hostsrcId.toString() + " DESTID " + hostdstId.toString());
                 //para mandar los links, edges, bw, de la topologia
                 //mando la mac source del atacante y de la victima
-                String jsonFlow = "" + getTopologyBandwidth(ethPkt.getSourceMAC().toString(), ethPkt.getDestinationMAC().toString());
-                String auxResponse = "";
+                String jsonFlowGoing = "" + getTopologyBandwidth(hostsrcId.toString(), hostdstId.toString());
+                String auxResponseGoing = "";
+                // String jsonFlowBack = "" + getTopologyBandwidth( ethPkt.getDestinationMAC().toString() , ethPkt.getSourceMAC().toString());
+                // String auxResponseBack = "";
 
                 try {
                     Client client = ClientBuilder.newClient();
                     //String response = client.target("http://10.0.2.15:9001/predict").request().get(String.class);
-                    String response = client.target("http://192.168.1.103:8081/shortestPath/").request().post(Entity.entity(jsonFlow,MediaType.APPLICATION_JSON),String.class);
-                    auxResponse = response;
-                    if (!response.equals("incomplete")){
-                        log.info("Response from server: {}",response);
+                    String responseGoing = client.target("http://192.168.1.103:8081/shortestPath/").request().post(Entity.entity(jsonFlowGoing,MediaType.APPLICATION_JSON),String.class);
+                    auxResponseGoing = responseGoing;
+                    // String responseBack = client.target("http://192.168.1.103:8081/shortestPath/").request().post(Entity.entity(jsonFlowBack,MediaType.APPLICATION_JSON),String.class);
+                    // auxResponseBack = responseBack;
+                    if (!responseGoing.equals("incomplete")){
+                        log.info("Response from server responsegoing: {}",responseGoing);
                     }
+                    // if (!responseBack.equals("incomplete")){
+                    //     log.info("Response from server responseback: {}",responseBack);
+                    // }
+
                 } catch (Exception e) {
                     log.error("Error talking to Classifier API.");
                 }
 
                 
                 //log.info("getTopoBand {}",getTopologyBandwidth(  ethPkt.getSourceMAC().toString(), ethPkt.getDestinationMAC().toString()  ));
-                String formatedResponse = auxResponse.replace("[", "").replace("]","").replace(",","").replace("\"", "");
+                String formatedResponseGoing = auxResponseGoing.replace("[", "").replace("]","").replace(",","").replace("\"", "");
+                //String formatedResponseBack = auxResponseBack.replace("[", "").replace("]","").replace(",","").replace("\"", "");
                 
                 //si la longitud de la cadena es par, (longitud / 2) -1 = numSwitchesPorPasar
                 int numSwitches = 0;
 
-                String switchesHop[] = formatedResponse.split(" "); 
-                log.info("AUXILIAR "+ Arrays.toString(switchesHop));  
+                String switchesHopGoing[] = formatedResponseGoing.split(" "); 
+                log.info("Switches Going "+ Arrays.toString(switchesHopGoing)); 
+                
+                //log.info("Switches Back "+ Arrays.toString(switchesHopBack));  
+
+                String switchesHopBack[] = new String[ switchesHopGoing.length ]; 
                 //log.info("Length de switchesHOP {}", switchesHop.length );
                 String prueba[] = new String[3];
                 prueba[0] = "of:0000000000000002";
                 prueba[1] = "of:0000000000000003";
                 prueba[2] = "of:0000000000000001";
                 
+
+                int j = 0;
+                //reversear un array para obtener el path de regreso 
+                for(int a = switchesHopGoing.length-1 , b = 0; a >= 0 ; a--, b++ ){                    
+                    switchesHopBack[b] = switchesHopGoing[a];
+                    //log.info("sssssssssss {}",switchesHopBack[b]);
+                }
+
+
                 //obtiene los puertos de los switches por los que tiene que ir
                 //y despues llama a una funcion para instalar las reglas 
-                getSwitchesPorts(switchesHop, context, ethPkt.getDestinationMAC().toString());
+                //el destination es 000004
+                getSwitchesPorts(switchesHopGoing, hostsrcId, hostdstId, hostdstId.toString());
+                //el destination es 000001
+                //getSwitchesPorts(switchesHopBack, context, "00:00:00:00:00:01");
 
   
                // Agregar regla de flujo con IDLE TIMEOUT Y HARDTIMEOUT ( esto aun no funciona)
@@ -1086,52 +1252,51 @@ public class intentBasedNetworking extends AbstractWebResource {
                 //     .withIdleTimeout(IDLE_TIMEOUT)
                 //     .build();
                 //break; 
-                log.info("2DO IF PARA MITIGAR "+srcips);
-                log.info("CONTIENE KEY? "+hashPossibleMalicious.containsKey(srcips));
+                //log.info("2DO IF PARA MITIGAR "+srcips);
+                log.info("CONTIENE KEY? "+hashPossibleMalicious.containsKey(hostSrcIP));
 
                 
             }
             //Si el atacante ya esta en el hash, entonces mitigar ese flujo, en el switch mas cercano al atacante
-            else if(ethPkt.getSourceMAC().toString().equals("00:00:00:00:00:04") && 
-                ethPkt.getDestinationMAC().toString().equals("00:00:00:00:00:01") &&
-                hashPossibleMalicious.containsKey(srcips) == true ){            
-                log.info("TUMBADOOOOOOOOOOOOO ");
-                // cortar trafico (ya funciona)
-                TrafficSelector objectiveSelector = DefaultTrafficSelector.builder()
-                        .matchEthSrc(srcId.mac()).matchEthDst(dstId.mac()).build();
+            else if( hostSrcIP.contains("10.0.0.5") && 
+                hostDestinationIP.contains("10.0.0.1") &&
+                hashPossibleMalicious.containsKey(hostSrcIP) == true ){            
+                // log.info("TUMBADOOOOOOOOOOOOO ");
+                // // cortar trafico (ya funciona)
+                // TrafficSelector objectiveSelector = DefaultTrafficSelector.builder()
+                //         .matchEthSrc(hostsrcId.mac()).matchEthDst(hostdstId.mac()).build();
 
-                TrafficTreatment dropTreatment = DefaultTrafficTreatment.builder()
-                        .drop().build();
+                // TrafficTreatment dropTreatment = DefaultTrafficTreatment.builder()
+                //         .drop().build();
 
-                ForwardingObjective objective = DefaultForwardingObjective.builder()
-                        .withSelector(objectiveSelector)
-                        .withTreatment(dropTreatment)
-                        .fromApp(appId)
-                        .withPriority(150)
-                        .makeTemporary(20)
-                        .withFlag(ForwardingObjective.Flag.VERSATILE)
-                        .add();
+                // ForwardingObjective objective = DefaultForwardingObjective.builder()
+                //         .withSelector(objectiveSelector)
+                //         .withTreatment(dropTreatment)
+                //         .fromApp(appId)
+                //         .withPriority(150)
+                //         .makeTemporary(20)
+                //         .withFlag(ForwardingObjective.Flag.VERSATILE)
+                //         .add();
 
-                flowObjectiveService.forward(context.outPacket().sendThrough(), objective);
+
+                // flowObjectiveService.forward(hostService.getHost(hostsrcId).location().deviceId(), objective);
 
 
                 //para que cada cierto tiempo se saque ese flujo sospechoso del hashmap
                 timerHash.schedule(new TimerTask() {
                         @Override
                         public void run() {
-                            hashPossibleMalicious.remove(srcips);
+                            hashPossibleMalicious.remove(hostSrcIP);
                         }
                     }, timeoutHashMap);
                 //DROP_RULE_TIMEOUT
             }
 
-
-//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-
-        }
+    }
 
     }
+
+
 
     // Indicates whether this is a control packet, e.g. LLDP, BDDP
     private boolean isControlPacket(Ethernet eth) {
@@ -1147,12 +1312,25 @@ public class intentBasedNetworking extends AbstractWebResource {
     // Selects a path from the given set that does not lead back to the
     // specified port if possible.
     private Path pickForwardPathIfPossible(Set<Path> paths, PortNumber notToPort) {
+        Path pathAvailable = null;
+        PortNumber temporal = null;
         for (Path path : paths) {
-            if (!path.src().port().equals(notToPort)) {
-                return path;
+            Boolean includeMirrorDevice = false;
+            for (Link link:path.links()){
+                if (link.dst().deviceId().equals(mirrorDeviceID)) { // avoid paths that pass to the mirrorring SW
+                    includeMirrorDevice = true;
+                    temporal = link.dst().port();
+                }
+            }
+            if (path.dst().deviceId().equals(mirrorDeviceID) && path.links().size()==1){ // get port that connects to the mirroring device
+                mirrorPortNumber = temporal;
+            }
+
+            if (!path.src().port().equals(notToPort) && !includeMirrorDevice) { // do not return to the same port
+                         pathAvailable = path;
             }
         }
-        return null;
+        return pathAvailable;
     }
 
     // Floods the specified packet if permissible.
