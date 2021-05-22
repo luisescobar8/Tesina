@@ -667,8 +667,8 @@ public class intentBasedNetworking extends AbstractWebResource {
 
         ObjectMapper mapper = new ObjectMapper();
         ObjectNode rootNode = mapper.createObjectNode();
-
         ArrayNode linksNode = mapper.createArrayNode();
+        //probar con getlinks ya que se necesitan todos para buscar ruta mas corta
         for (Link link: linkService.getActiveLinks()){
             //if para evitar obtener su link device 65 porque se usa para mirroring /////////////////////
             if( !link.src().deviceId().toString().contains("of:0000000000000065") && 
@@ -837,6 +837,7 @@ public class intentBasedNetworking extends AbstractWebResource {
         isEndDevice = false;
         ArrayNode linksNode = mapper.createArrayNode();
         for( int i = 0; i < switchesHop.length-1; i++ ){
+            //probar con getLinks() para obtener todos los links y no solo los activos ya que necesitamos buscar por todos para los puertos
             for (Link link: linkService.getActiveLinks()){                    
                 //si el primer switch por el que hay que ir es igual al switch que se esta recorriendo
                 //para obtener los puertos que conectan los switches por los que tiene que viajar el flujo
@@ -965,10 +966,24 @@ public class intentBasedNetworking extends AbstractWebResource {
                 }
             }
 
+             //MITIGATIOOOOOOOOOON METHOD
+            mitigation();
+
             // Do we know who this is for? If not, flood and bail.
             Host dst = hostService.getHost(id);
             if (dst == null) {
                 flood(context, macMetrics);
+                return;
+            }
+
+            // Are we on the mirroring switch? If so,
+            // simply forward out to the Packet Collector and bail.
+            if (pkt.receivedFrom().deviceId().equals(mirrorDeviceID)) {
+                //log.info("SW mirror: receivedFrom {}",context.inPacket().receivedFrom());
+                if (!context.inPacket().receivedFrom().port().equals(PktCollectorPortNumber)) {
+                    //installRuleFwd(context, PktCollectorPortNumber, macMetrics);
+                    installRule(context, PktCollectorPortNumber, macMetrics);
+                }
                 return;
             }
         
@@ -1004,9 +1019,9 @@ public class intentBasedNetworking extends AbstractWebResource {
                 return;
             }
 
-            //MITIGATIOOOOOOOOOON METHOD
-            mitigation();
-            
+
+           
+           
                         // Otherwise forward and be done with it.
             installRule(context, path.src().port(), macMetrics);
 
@@ -1048,17 +1063,18 @@ public class intentBasedNetworking extends AbstractWebResource {
             // }
 
 ////////////////ABRAHAM TRY CATCH /////////
-    String srcips = ""; //////////////////////hay que revisar esto
-    String dstips = "";
-    String key = srcips + " - " + dstips;
-    //Comunicar con el IDS 
-    //normal es default, en caso que ocurra error con ids, parseo, etc
-    String label = "normal";
+        String srcips = ""; //////////////////////hay que revisar esto
+        String dstips = "";
+        String key = srcips + " - " + dstips;
+        //Comunicar con el IDS 
+        //normal es default, en caso que ocurra error con ids, parseo, etc
+        String label = "normal";
         try {
 
         Client client = ClientBuilder.newClient();
         //String response = client.target("http://192.168.0.101:9001/predict").request().post(Entity.entity(jsonFlow1,MediaType.APPLICATION_JSON),String.class);
-        String response = client.target("http://192.168.1.103:9001/respond").request().get(String.class);
+        String response = client.target("http://192.168.1.101:9001/respond").request().get(String.class);
+        log.info("RESPONSEEEEEEEEEEEEEE {}",response);
         //log.warn("RESPUESTA \n{}",response);
         /*
         int i =0;
@@ -1189,7 +1205,7 @@ public class intentBasedNetworking extends AbstractWebResource {
                 try {
                     Client client = ClientBuilder.newClient();
                     //String response = client.target("http://10.0.2.15:9001/predict").request().get(String.class);
-                    String responseGoing = client.target("http://192.168.1.103:8081/shortestPath/").request().post(Entity.entity(jsonFlowGoing,MediaType.APPLICATION_JSON),String.class);
+                    String responseGoing = client.target("http://192.168.1.101:8081/shortestPath/").request().post(Entity.entity(jsonFlowGoing,MediaType.APPLICATION_JSON),String.class);
                     auxResponseGoing = responseGoing;
                     // String responseBack = client.target("http://192.168.1.103:8081/shortestPath/").request().post(Entity.entity(jsonFlowBack,MediaType.APPLICATION_JSON),String.class);
                     // auxResponseBack = responseBack;
@@ -1237,6 +1253,7 @@ public class intentBasedNetworking extends AbstractWebResource {
                 //y despues llama a una funcion para instalar las reglas 
                 //el destination es 000004
                 getSwitchesPorts(switchesHopGoing, hostsrcId, hostdstId, hostdstId.toString());
+                getSwitchesPorts(switchesHopBack, hostdstId, hostsrcId, hostsrcId.toString());
                 //el destination es 000001
                 //getSwitchesPorts(switchesHopBack, context, "00:00:00:00:00:01");
 
