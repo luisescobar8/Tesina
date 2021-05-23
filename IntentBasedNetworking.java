@@ -396,6 +396,7 @@ public class intentBasedNetworking extends AbstractWebResource {
     private int vecesEntro = 0;
     private static boolean flag = false;
     private static Timer timerHash = new Timer();
+    private static TimerTask timerTask;
     private static long timeoutHashMap = 20_000; // milliseconds
     private boolean isEndDevice = false;
     // /** Enable use of builder from packet context to define flow treatment; default is false. */
@@ -669,7 +670,7 @@ public class intentBasedNetworking extends AbstractWebResource {
         ObjectNode rootNode = mapper.createObjectNode();
         ArrayNode linksNode = mapper.createArrayNode();
         //probar con getlinks ya que se necesitan todos para buscar ruta mas corta
-        for (Link link: linkService.getActiveLinks()){
+        for (Link link: linkService.getLinks()){
             //if para evitar obtener su link device 65 porque se usa para mirroring /////////////////////
             if( !link.src().deviceId().toString().contains("of:0000000000000065") && 
                 !link.dst().deviceId().toString().contains("of:0000000000000065")) {
@@ -838,7 +839,7 @@ public class intentBasedNetworking extends AbstractWebResource {
         ArrayNode linksNode = mapper.createArrayNode();
         for( int i = 0; i < switchesHop.length-1; i++ ){
             //probar con getLinks() para obtener todos los links y no solo los activos ya que necesitamos buscar por todos para los puertos
-            for (Link link: linkService.getActiveLinks()){                    
+            for (Link link: linkService.getLinks()){                    
                 //si el primer switch por el que hay que ir es igual al switch que se esta recorriendo
                 //para obtener los puertos que conectan los switches por los que tiene que viajar el flujo
                 if( switchesHop[i].contains( link.src().deviceId().toString() ) &&
@@ -1030,141 +1031,120 @@ public class intentBasedNetworking extends AbstractWebResource {
 
 
         private void mitigation(){
-            // HostId srcId = HostId.hostId(ethPkt.getSourceMAC());
-            // HostId dstId = HostId.hostId(ethPkt.getDestinationMAC());
 
-            // Ethernet packeteth = context.inPacket().parsed();
-
-            // DeviceId deviceId = context.inPacket().receivedFrom().deviceId();
-            // try{
-            //     IPv4 ipv4 = (IPv4) packeteth.getPayload();
-            //     int srcip = ipv4.getSourceAddress();
-            //     String srcips = Ip4Address.valueOf(srcip).toString();//added
-            //     int dstip = ipv4.getDestinationAddress();
-            //     String dstips = Ip4Address.valueOf(dstip).toString(); //added
-            //     byte proto = ipv4.getProtocol();
-            //     int srcport = 0;
-            //     int dstport = 0;
-                
-            //     String protocolS = "TCP";
-
-            //     if (proto==6) {
-            //         TCP tcp = (TCP) ipv4.getPayload();
-            //         srcport = tcp.getSourcePort();
-            //         dstport = tcp.getDestinationPort();
-            //     } else {
-            //         UDP udp = (UDP) ipv4.getPayload();
-            //         srcport = udp.getSourcePort();
-            //         dstport = udp.getDestinationPort();
-            //         protocolS = "UDP";
-            //     }
-            // }catch(Exception e){
-            //     log.info("EXCEPTION");
-            // }
-
-////////////////ABRAHAM TRY CATCH /////////
-        String srcips = ""; //////////////////////hay que revisar esto
-        String dstips = "";
-        String key = srcips + " - " + dstips;
         //Comunicar con el IDS 
         //normal es default, en caso que ocurra error con ids, parseo, etc
+        String resultIPS[] = {};
+        String resultTAGS[] = {};
         String label = "normal";
         try {
 
-        Client client = ClientBuilder.newClient();
-        //String response = client.target("http://192.168.0.101:9001/predict").request().post(Entity.entity(jsonFlow1,MediaType.APPLICATION_JSON),String.class);
-        String response = client.target("http://192.168.1.101:9001/respond").request().get(String.class);
-        log.info("RESPONSEEEEEEEEEEEEEE {}",response);
-        //log.warn("RESPUESTA \n{}",response);
-        /*
-        int i =0;
-        for(i=0;i<response.length();i++){
-            log.info("{} {}",i,response.charAt(i));
-        }
-        */
-            //PROCESS THE STRING, get the data from the json string
+            Client client = ClientBuilder.newClient();
+            //String response = client.target("http://192.168.0.101:9001/predict").request().post(Entity.entity(jsonFlow1,MediaType.APPLICATION_JSON),String.class);
+            String response = client.target("http://192.168.1.102:9001/respond").request().get(String.class);
+            log.info("Response {}",response);
+
+            ObjectMapper mapper = new ObjectMapper();
+            InputStream stream = null;
+            
+            mapper.configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, true);
             try{
-                //The data starts after the last '{' and ends before the first '}'
-                int rStart = response.lastIndexOf('{')+1;
-                int rEnd = response.indexOf('}');
-                String newResponse = response.substring(rStart,rEnd).trim();
-                log.info("NEW RESPONSE {}",newResponse);
-                boolean entered = false; //control variable
-                //Si el dicc no tiene nada, mantener normal,
-                //else procesar las llaves
-                if(newResponse.length() > 0){ 
-                    String parts[] = newResponse.split(",");
-                    for(String part: parts){
-                        String data[]= part.split(":");
-                        //Extraer el key y el value, remover los ""
-                        String srcdstip = data[0].trim();
-                        srcdstip = srcdstip.substring(1,srcdstip.length()-1);
-                        String val = data[1].trim();
-                        val = val.substring(1,val.length()-1);
-                        //Para debug
-                        log.info("AN ENTRY X{}X - Y{}Y",srcdstip,val);
-                        log.info("LOOKING FOR Z{}Z",key);
-                        if(key.equals(srcdstip)){ //The current key is in dic
-                            log.info("FOUND MATCHING IP");
-                            entered = true;
-                            label = val;
-                            break;
-                        }
-                    }
+                ObjectNode rootNode = mapper.createObjectNode();
+                //stream = new ByteArrayInputStream(response.getBytes(StandardCharsets.UTF_8));
+                stream = org.apache.commons.io.IOUtils.toInputStream(response, "UTF-8");
+                log.info("Class stream "+stream.getClass());
+
+                //ProviderId providerId = new ProviderId("provider.scheme", "provider.id");
+                Map<String, Object> suspicious_ = mapper.readValue(stream, Map.class);
+                //Routes routes = mapper.readValue(stream, Routes.class);
+                log.info("SUspicious size "+suspicious_.size());
+                int sizeArrayIPData = suspicious_.size() *2;
+                //X2 porque obtenemos 2 valores, iporigen-ipdestino
+                resultIPS = new String[ sizeArrayIPData];
+                //X2 porque obtenemos 2 valores, predlabel-reallabel 
+                resultTAGS = new String[ sizeArrayIPData]; 
+                
+                if (suspicious_ == null || suspicious_.size() == 0) {
+                    rootNode.put("response", "No given hosts to drop packets");
+                    log.info("response no given hosts detected");
                 }
-                log.info("RESULT entered - {}, label - {}",entered,label);
+                int mapI = 0;
+                String auxSplitIPS[] = {};
+                String auxSplitTAGS[] = {};
+                String auxReceiveKey;
+                String auxReceiveValue;
+                 for (Map.Entry<String, Object> entry : suspicious_.entrySet()) {
+                    auxReceiveKey = "" + entry.getKey();
+                    auxReceiveValue = "" + entry.getValue();
+                    auxSplitIPS = auxReceiveKey.split("-");
+                    auxSplitTAGS = auxReceiveValue.split("-");
+                    resultIPS[ mapI ] = auxSplitIPS[0]; //iporigen
+                    resultIPS[ mapI + 1 ] = auxSplitIPS[1]; //ipdestino
+                    resultTAGS[ mapI ] =  auxSplitTAGS[0];  //predlabel
+                    resultTAGS[ mapI + 1 ] =  auxSplitTAGS[1]; //reallabel
+                    mapI  = mapI + 2;                  
+                    // log.info("IPORIGEN-DESTINO {}",resultIPS);
+                    // log.info("PRED-REAL {}",resultTAGS);
+                }
+
 
             }catch(Exception e){
-                log.warn("problem parsing response");
-            }
+                log.info(e.toString());
+  
+            }                 
         
 
         } catch (Exception e) {
             log.error("Error communicating to IDS service.");
             //System.out.println ("Error communicating to IDS service.");
         }
-            
-            HostService hostService = get(HostService.class);
-            HostId hostsrcId = null;
-            HostId hostdstId = null;
-            //srcId.requestMac(ipAddress);
-            String hostSrcIP = "10.0.0.5";
-            String hostDestinationIP = "10.0.0.1";
-            Set<Host> hosts = hostService.getHostsByIp(IpAddress.valueOf("10.0.0.5"));
-            //if (hosts.isEmpty()) continue;
+
+        HostService hostService = get(HostService.class);
+        HostId hostsrcId = null;
+        HostId hostdstId = null;
+        
+        String hostSourceIP = "";
+        String hostDestinationIP;
+        
+        String tagPred;
+        String tagReal;
+        if( resultIPS.length != 0){
+            for(int r = 0 ; r < resultIPS.length -1 ; r++){
+                log.info(" IP ORIGEN "+resultIPS[r]);
+                log.info(" IP DESTIO "+resultIPS[r+1]);
+                log.info(" TAG PRED "+resultTAGS[r]);
+                log.info(" TAG REAL "+resultTAGS[r+1]);
+                
+                hostSourceIP = resultIPS[r];
+                hostDestinationIP = resultIPS[r+1];
+
+                tagPred = resultTAGS[r];
+                tagReal = resultTAGS[r+1];
+
+                Set<Host> hosts = hostService.getHostsByIp(IpAddress.valueOf(hostSourceIP));
+                //if (hosts.isEmpty()) continue;
                 for (Host host: hosts) {
                     hostsrcId = host.id();
                     //log.info("asfadfasdfasdfas {}",hostsrcId);
                 }
 
-            hosts = hostService.getHostsByIp(IpAddress.valueOf("10.0.0.1"));
+                hosts = hostService.getHostsByIp(IpAddress.valueOf(hostDestinationIP));
                 
                 for (Host host: hosts) {
                     hostdstId = host.id();
                 }
-            
-
-            //hosts = hostService.getHostsByIp(IpAddress.valueOf(dst));
-
-            //log.info("SRC MAC: "+ethPkt.getSourceMAC()+" DSTMAC: "+ethPkt.getDestinationMAC());
-            //System.out.println("srcip: "+srcip+" srcport: "+srcport);
-            //atacante h4, victima h1
-            //log.info("The attacker is "+ethPkt.getSourceMAC().toString());
-            //log.info("2 hash "+vecesEntro);
 
 
             //AGREGAR TAMBIEN UN TIMEMILISECONDS PARA SACAR DEL HASH CADA CIERT TIEMPO LOS FLUJOS MALIGNOS Y NO SE QUEDEN EN MEMORIA
             // hashPossibleMalicious = new HashMap<String, List<String>>();
             // values = new ArrayList<String>();
 
-
+            log.info("TAAGGGGG PREDDD {}",tagPred);
             //Si el flujo es atacante, y no esta en el hash
             //Redirigir a los canales menos usados en terminos de bandwidth, instalar reglas HARDTIMEOUT e IDLE
-            if( hostSrcIP.contains("10.0.0.5") && 
-                hostDestinationIP.contains("10.0.0.1") &&
-                hashPossibleMalicious.containsKey(hostSrcIP) == false ){
+            if( !tagPred.contains("normal")  && hashPossibleMalicious.containsKey(hostSourceIP) == false){
                 //log.info("The attacker is "+ethPkt.getSourceMAC().toString());
-                log.info("The attacker IP is "+hostsrcId);
+                log.info("The attacker IP is "+hostSourceIP);
                 //Agregar a hashmap, para que la 2da vez que pase sea mitigado
                 vecesEntro = vecesEntro + 1;
                 //log.info("vecesEntro "+vecesEntro);
@@ -1181,7 +1161,7 @@ public class intentBasedNetworking extends AbstractWebResource {
                 //colocar 1 vez agregado
                 values.add("First time added");
                 //la llave es la ip origen    
-                hashPossibleMalicious.put(hostSrcIP, values);
+                hashPossibleMalicious.put(hostSourceIP, values);
                 //log.info("SIZE "+hashPossibleMalicious.size());
                 int i = 0;
                 // to get the arraylist values of the given hashmap key
@@ -1205,7 +1185,7 @@ public class intentBasedNetworking extends AbstractWebResource {
                 try {
                     Client client = ClientBuilder.newClient();
                     //String response = client.target("http://10.0.2.15:9001/predict").request().get(String.class);
-                    String responseGoing = client.target("http://192.168.1.101:8081/shortestPath/").request().post(Entity.entity(jsonFlowGoing,MediaType.APPLICATION_JSON),String.class);
+                    String responseGoing = client.target("http://192.168.1.102:8081/shortestPath/").request().post(Entity.entity(jsonFlowGoing,MediaType.APPLICATION_JSON),String.class);
                     auxResponseGoing = responseGoing;
                     // String responseBack = client.target("http://192.168.1.103:8081/shortestPath/").request().post(Entity.entity(jsonFlowBack,MediaType.APPLICATION_JSON),String.class);
                     // auxResponseBack = responseBack;
@@ -1250,64 +1230,69 @@ public class intentBasedNetworking extends AbstractWebResource {
 
 
                 //obtiene los puertos de los switches por los que tiene que ir
-                //y despues llama a una funcion para instalar las reglas 
-                //el destination es 000004
-                getSwitchesPorts(switchesHopGoing, hostsrcId, hostdstId, hostdstId.toString());
-                getSwitchesPorts(switchesHopBack, hostdstId, hostsrcId, hostsrcId.toString());
-                //el destination es 000001
-                //getSwitchesPorts(switchesHopBack, context, "00:00:00:00:00:01");
+                //y despues llama a una funcion para instalar las reglas
 
   
-               // Agregar regla de flujo con IDLE TIMEOUT Y HARDTIMEOUT ( esto aun no funciona)
-                // FlowRule transitFlowRule = DefaultFlowRule.builder()
-                //     .forDevice(this.data().deviceId())
-                //     .withSelector(sBuilder.build())
-                //     .withTreatment(instTreatment)
-                //     .withPriority(125)
-                //     .forTable(IntConstants.INGRESS_PROCESS_INT_SOURCE_TB_INT_SOURCE)
-                //     .fromApp(appId)
-                //     .withIdleTimeout(IDLE_TIMEOUT)
-                //     .build();
-                //break; 
-                //log.info("2DO IF PARA MITIGAR "+srcips);
-                log.info("CONTIENE KEY? "+hashPossibleMalicious.containsKey(hostSrcIP));
-
-                
-            }
-            //Si el atacante ya esta en el hash, entonces mitigar ese flujo, en el switch mas cercano al atacante
-            else if( hostSrcIP.contains("10.0.0.5") && 
-                hostDestinationIP.contains("10.0.0.1") &&
-                hashPossibleMalicious.containsKey(hostSrcIP) == true ){            
-                // log.info("TUMBADOOOOOOOOOOOOO ");
-                // // cortar trafico (ya funciona)
-                // TrafficSelector objectiveSelector = DefaultTrafficSelector.builder()
-                //         .matchEthSrc(hostsrcId.mac()).matchEthDst(hostdstId.mac()).build();
-
-                // TrafficTreatment dropTreatment = DefaultTrafficTreatment.builder()
-                //         .drop().build();
-
-                // ForwardingObjective objective = DefaultForwardingObjective.builder()
-                //         .withSelector(objectiveSelector)
-                //         .withTreatment(dropTreatment)
-                //         .fromApp(appId)
-                //         .withPriority(150)
-                //         .makeTemporary(20)
-                //         .withFlag(ForwardingObjective.Flag.VERSATILE)
-                //         .add();
+                getSwitchesPorts(switchesHopGoing, hostsrcId, hostdstId, hostdstId.toString());
+                getSwitchesPorts(switchesHopBack, hostdstId, hostsrcId, hostsrcId.toString());
+   
+                log.info("CONTIENE KEY? "+hashPossibleMalicious.containsKey(hostSourceIP));
 
 
-                // flowObjectiveService.forward(hostService.getHost(hostsrcId).location().deviceId(), objective);
-
-
+                String timeoutSourceIP = hostSourceIP;
                 //para que cada cierto tiempo se saque ese flujo sospechoso del hashmap
                 timerHash.schedule(new TimerTask() {
                         @Override
                         public void run() {
-                            hashPossibleMalicious.remove(hostSrcIP);
+                            hashPossibleMalicious.remove(timeoutSourceIP);
+                        }
+                }, timeoutHashMap);
+
+                
+            }
+            //Si el atacante ya esta en el hash, entonces mitigar ese flujo, en el switch mas cercano al atacante
+            else if( !tagPred.contains("normal")  && hashPossibleMalicious.containsKey(hostSourceIP) == true){            
+                log.info("TUMBADOOOOOOOOOOOOO ");
+                // // cortar trafico (ya funciona)
+                TrafficSelector objectiveSelector = DefaultTrafficSelector.builder()
+                        .matchEthSrc(hostsrcId.mac()).matchEthDst(hostdstId.mac()).build();
+
+                TrafficTreatment dropTreatment = DefaultTrafficTreatment.builder()
+                        .drop().build();
+
+                ForwardingObjective objective = DefaultForwardingObjective.builder()
+                        .withSelector(objectiveSelector)
+                        .withTreatment(dropTreatment)
+                        .fromApp(appId)
+                        .withPriority(150)
+                        .makeTemporary(20)
+                        .withFlag(ForwardingObjective.Flag.VERSATILE)
+                        .add();
+
+
+                // flowObjectiveService.forward(hostService.getHost(hostsrcId).location().deviceId(), objective);
+                String timeoutSourceIP = hostSourceIP;
+
+                //para que cada cierto tiempo se saque ese flujo sospechoso del hashmap
+                timerHash.schedule(timerTask = new TimerTask() {
+                        @Override
+                        public void run() {
+                            hashPossibleMalicious.remove(timeoutSourceIP);
                         }
                     }, timeoutHashMap);
                 //DROP_RULE_TIMEOUT
+
+
+
+
+
             }
+
+            }
+        }
+        else{
+            log.warn("NO HAY RESPUESTA DE FLOWCOLLECTOR ");
+        }
 
     }
 
