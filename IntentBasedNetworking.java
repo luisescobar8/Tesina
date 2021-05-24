@@ -305,7 +305,7 @@ public class intentBasedNetworking extends AbstractWebResource {
     @Reference(cardinality = ReferenceCardinality.MANDATORY)
     protected IntentService intentService;
 
-    private static final int DROP_RULE_TIMEOUT = 300;
+    private static final int DROP_RULE_TIMEOUT = 30;
 
     private static final EnumSet<IntentState> WITHDRAWN_STATES = EnumSet.of(IntentState.WITHDRAWN,
                                                                             IntentState.WITHDRAWING,
@@ -397,7 +397,7 @@ public class intentBasedNetworking extends AbstractWebResource {
     private static boolean flag = false;
     private static Timer timerHash = new Timer();
     private static TimerTask timerTask;
-    private static long timeoutHashMap = 20_000; // milliseconds
+    private static long timeoutHashMap = 30_000; // milliseconds
     private boolean isEndDevice = false;
     // /** Enable use of builder from packet context to define flow treatment; default is false. */
     // static final boolean INHERIT_FLOW_TREATMENT_DEFAULT = false;
@@ -926,7 +926,6 @@ public class intentBasedNetworking extends AbstractWebResource {
             }
 */
           
-            
 
             InboundPacket pkt = context.inPacket();
             Ethernet ethPkt = pkt.parsed();
@@ -951,6 +950,8 @@ public class intentBasedNetworking extends AbstractWebResource {
                 droppedPacket(macMetrics);
                 return;
             }
+       
+
 
             HostId id = HostId.hostId(ethPkt.getDestinationMAC(), VlanId.vlanId(ethPkt.getVlanID()));
 
@@ -983,7 +984,7 @@ public class intentBasedNetworking extends AbstractWebResource {
                 //log.info("SW mirror: receivedFrom {}",context.inPacket().receivedFrom());
                 if (!context.inPacket().receivedFrom().port().equals(PktCollectorPortNumber)) {
                     //installRuleFwd(context, PktCollectorPortNumber, macMetrics);
-                    installRule(context, PktCollectorPortNumber, macMetrics);
+                    installRule(context, PktCollectorPortNumber, macMetrics, false);
                 }
                 return;
             }
@@ -993,7 +994,7 @@ public class intentBasedNetworking extends AbstractWebResource {
             // simply forward out to the destination and bail.
             if (pkt.receivedFrom().deviceId().equals(dst.location().deviceId())) {
                 if (!context.inPacket().receivedFrom().port().equals(dst.location().port())) {
-                    installRule(context, dst.location().port(), macMetrics);
+                    installRule(context, dst.location().port(), macMetrics, true);
                 }
                 return;
             }
@@ -1024,7 +1025,7 @@ public class intentBasedNetworking extends AbstractWebResource {
            
            
                         // Otherwise forward and be done with it.
-            installRule(context, path.src().port(), macMetrics);
+            installRule(context, path.src().port(), macMetrics, false);
 
 
         }
@@ -1041,7 +1042,7 @@ public class intentBasedNetworking extends AbstractWebResource {
 
             Client client = ClientBuilder.newClient();
             //String response = client.target("http://192.168.0.101:9001/predict").request().post(Entity.entity(jsonFlow1,MediaType.APPLICATION_JSON),String.class);
-            String response = client.target("http://192.168.1.102:9001/respond").request().get(String.class);
+            String response = client.target("http://192.168.1.103:9001/respond").request().get(String.class);
             log.info("Response {}",response);
 
             ObjectMapper mapper = new ObjectMapper();
@@ -1185,7 +1186,7 @@ public class intentBasedNetworking extends AbstractWebResource {
                 try {
                     Client client = ClientBuilder.newClient();
                     //String response = client.target("http://10.0.2.15:9001/predict").request().get(String.class);
-                    String responseGoing = client.target("http://192.168.1.102:8081/shortestPath/").request().post(Entity.entity(jsonFlowGoing,MediaType.APPLICATION_JSON),String.class);
+                    String responseGoing = client.target("http://192.168.1.103:8081/shortestPath/").request().post(Entity.entity(jsonFlowGoing,MediaType.APPLICATION_JSON),String.class);
                     auxResponseGoing = responseGoing;
                     // String responseBack = client.target("http://192.168.1.103:8081/shortestPath/").request().post(Entity.entity(jsonFlowBack,MediaType.APPLICATION_JSON),String.class);
                     // auxResponseBack = responseBack;
@@ -1265,12 +1266,13 @@ public class intentBasedNetworking extends AbstractWebResource {
                         .withTreatment(dropTreatment)
                         .fromApp(appId)
                         .withPriority(150)
-                        .makeTemporary(20)
+                        .makeTemporary(DROP_RULE_TIMEOUT)
                         .withFlag(ForwardingObjective.Flag.VERSATILE)
                         .add();
 
 
-                // flowObjectiveService.forward(hostService.getHost(hostsrcId).location().deviceId(), objective);
+                flowObjectiveService.forward(hostService.getHost(hostsrcId).location().deviceId(), objective);
+
                 String timeoutSourceIP = hostSourceIP;
 
                 //para que cada cierto tiempo se saque ese flujo sospechoso del hashmap
@@ -1325,7 +1327,7 @@ public class intentBasedNetworking extends AbstractWebResource {
                 }
             }
             if (path.dst().deviceId().equals(mirrorDeviceID) && path.links().size()==1){ // get port that connects to the mirroring device
-                mirrorPortNumber = temporal;
+                //mirrorPortNumber = temporal;
             }
 
             if (!path.src().port().equals(notToPort) && !includeMirrorDevice) { // do not return to the same port
@@ -1353,7 +1355,7 @@ public class intentBasedNetworking extends AbstractWebResource {
     }
 
     // Install a rule forwarding the packet to the specified port.
-    private void installRule(PacketContext context, PortNumber portNumber, ReactiveForwardMetrics macMetrics) {
+    private void installRule(PacketContext context, PortNumber portNumber, ReactiveForwardMetrics macMetrics, Boolean endDevice) {
         //
         // We don't support (yet) buffer IDs in the Flow Service so
         // packet out first.
@@ -1469,15 +1471,23 @@ public class intentBasedNetworking extends AbstractWebResource {
                 }
             }
         }
-        TrafficTreatment treatment;
+       TrafficTreatment treatment;
         if (inheritFlowTreatment) {
+
             treatment = context.treatmentBuilder()
-                    .setOutput(portNumber)
-                    .build();
+            .setOutput(portNumber)
+            .build();
         } else {
-            treatment = DefaultTrafficTreatment.builder()
-                    .setOutput(portNumber)
-                    .build();
+            if(endDevice){
+                treatment = context.treatmentBuilder()
+                .setOutput(portNumber)
+                .setOutput(mirrorPortNumber)
+                .build();           
+            }else{
+                treatment = context.treatmentBuilder()
+                .setOutput(portNumber)
+                .build();
+            }
         }
 
        ForwardingObjective forwardingObjective = DefaultForwardingObjective.builder()
