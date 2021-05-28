@@ -266,6 +266,11 @@ import java.util.TimerTask;
 
 import org.onlab.packet.IpAddress;
 
+import java.io.File;  // Import the File class
+import java.io.IOException;  // Import the IOException class to handle errors
+import java.io.Writer;
+import java.io.PrintWriter;
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 
@@ -399,6 +404,15 @@ public class intentBasedNetworking extends AbstractWebResource {
     private static TimerTask timerTask;
     private static long timeoutHashMap = 30_000; // milliseconds
     private boolean isEndDevice = false;
+    private static HashMap<String, Integer> suspiciousTimes = new HashMap<String, Integer>();
+    private static int totalFlows = 0;
+    private static int totalMaliciousFlows = 0;
+    private static int legitimateFlowsDropped = 0;
+    private static int maliciousFlowsNotDropped = 0;
+    private static int normalFlows = 0;
+    private static int maliciousFlows = 0;
+    private static int maliciousFlowsDropped = 0;
+    //private static PrintWriter resultsFile = new PrintWriter("results.txt", "UTF-8");
     // /** Enable use of builder from packet context to define flow treatment; default is false. */
     // static final boolean INHERIT_FLOW_TREATMENT_DEFAULT = false;
     // private boolean inheritFlowTreatment = INHERIT_FLOW_TREATMENT_DEFAULT;
@@ -672,8 +686,8 @@ public class intentBasedNetworking extends AbstractWebResource {
         //probar con getlinks ya que se necesitan todos para buscar ruta mas corta
         for (Link link: linkService.getLinks()){
             //if para evitar obtener su link device 65 porque se usa para mirroring /////////////////////
-            if( !link.src().deviceId().toString().contains("of:0000000000000065") && 
-                !link.dst().deviceId().toString().contains("of:0000000000000065")) {
+            if( !link.src().deviceId().toString().equals("of:0000000000000065") && 
+                !link.dst().deviceId().toString().equals("of:0000000000000065")) {
                 long srcBw = portStatisticsService.load(link.src()).rate() * 8 / 1000;
                 long dstBw = portStatisticsService.load(link.dst()).rate() * 8 / 1000;
 
@@ -700,7 +714,7 @@ public class intentBasedNetworking extends AbstractWebResource {
             //busca la ubicacion del src y su switch origen, y del dst y su switch origen
             String replaceHostID =  host.id().toString().replace("/None", ""); 
 
-            if( sourceAttacker.equals( host.id().toString() ) ){   
+            if( sourceAttacker.equals( host.id().toString() ) ) {   
 
                 ObjectNode hostNode = mapper.createObjectNode()
                         .put("host", host.id().toString())
@@ -925,7 +939,7 @@ public class intentBasedNetworking extends AbstractWebResource {
                 return;
             }
 */
-          
+            //mitigation();
 
             InboundPacket pkt = context.inPacket();
             Ethernet ethPkt = pkt.parsed();
@@ -1053,12 +1067,12 @@ public class intentBasedNetworking extends AbstractWebResource {
                 ObjectNode rootNode = mapper.createObjectNode();
                 //stream = new ByteArrayInputStream(response.getBytes(StandardCharsets.UTF_8));
                 stream = org.apache.commons.io.IOUtils.toInputStream(response, "UTF-8");
-                log.info("Class stream "+stream.getClass());
+                //log.info("Class stream "+stream.getClass());
 
                 //ProviderId providerId = new ProviderId("provider.scheme", "provider.id");
                 Map<String, Object> suspicious_ = mapper.readValue(stream, Map.class);
                 //Routes routes = mapper.readValue(stream, Routes.class);
-                log.info("SUspicious size "+suspicious_.size());
+                //log.info("SUspicious size "+suspicious_.size());
                 int sizeArrayIPData = suspicious_.size() *2;
                 //X2 porque obtenemos 2 valores, iporigen-ipdestino
                 resultIPS = new String[ sizeArrayIPData];
@@ -1067,7 +1081,7 @@ public class intentBasedNetworking extends AbstractWebResource {
                 
                 if (suspicious_ == null || suspicious_.size() == 0) {
                     rootNode.put("response", "No given hosts to drop packets");
-                    log.info("response no given hosts detected");
+                    //log.info("response no given hosts detected");
                 }
                 int mapI = 0;
                 String auxSplitIPS[] = {};
@@ -1112,9 +1126,9 @@ public class intentBasedNetworking extends AbstractWebResource {
         if( resultIPS.length != 0){
             for(int r = 0 ; r < resultIPS.length -1 ; r++){
                 log.info(" IP ORIGEN "+resultIPS[r]);
-                log.info(" IP DESTIO "+resultIPS[r+1]);
-                log.info(" TAG PRED "+resultTAGS[r]);
-                log.info(" TAG REAL "+resultTAGS[r+1]);
+                log.info(" IP DESTINATION "+resultIPS[r+1]);
+                log.info(" PREDICTED TAG "+resultTAGS[r]);
+                log.info(" REAL TAG "+resultTAGS[r+1]);
                 
                 hostSourceIP = resultIPS[r];
                 hostDestinationIP = resultIPS[r+1];
@@ -1136,16 +1150,50 @@ public class intentBasedNetworking extends AbstractWebResource {
                 }
 
 
-            //AGREGAR TAMBIEN UN TIMEMILISECONDS PARA SACAR DEL HASH CADA CIERT TIEMPO LOS FLUJOS MALIGNOS Y NO SE QUEDEN EN MEMORIA
-            // hashPossibleMalicious = new HashMap<String, List<String>>();
-            // values = new ArrayList<String>();
+            //contar todos los flujos que llegan
+            if( (tagPred.equals("normal") || !tagPred.equals("normal")) && tagPred != null ){
+                totalFlows = totalFlows + 1;                
+            }
+            //contar los flujos malignos no dropeados
+            if( !tagReal.equals("normal") && tagReal != null){
+                maliciousFlowsNotDropped = maliciousFlowsNotDropped + 1;
+            }
+            //contar flujos normales
+            if( tagReal.equals("normal") && tagReal != null){
+                normalFlows = normalFlows + 1;
+            }
 
-            log.info("TAAGGGGG PREDDD {}",tagPred);
+            //contar los flujos malignos no dropeados
+            if( !tagReal.equals("normal") && tagReal != null){
+                maliciousFlows = maliciousFlows + 1;
+            }
+            
+
+            //iniciar en 0 cuando llega un nuevo flujo sospechoso
+            if( !suspiciousTimes.containsKey(hostSourceIP) && !tagPred.equals("normal") && tagPred != null){
+                //0
+                suspiciousTimes.put(hostSourceIP, 0 );
+            }
+
+
+            //AGREGAR TAMBIEN UN TIMEMILISECONDS PARA SACAR DEL HASH CADA CIERT TIEMPO LOS FLUJOS MALIGNOS Y NO SE QUEDEN EN MEMORIA
+
+            //log.info("TAAGGGGG PREDDD {}",tagPred);
             //Si el flujo es atacante, y no esta en el hash
             //Redirigir a los canales menos usados en terminos de bandwidth, instalar reglas HARDTIMEOUT e IDLE
-            if( !tagPred.contains("normal")  && hashPossibleMalicious.containsKey(hostSourceIP) == false){
+            if( !tagPred.equals("normal") && tagPred != null ){
                 //log.info("The attacker is "+ethPkt.getSourceMAC().toString());
                 log.info("The attacker IP is "+hostSourceIP);
+                
+
+                //obtiene el acumulado
+                int auxSuspiciousTimes = suspiciousTimes.get(hostSourceIP);
+                //al 0 obtenido le aumenta 1
+                suspiciousTimes.put(hostSourceIP, auxSuspiciousTimes + 1 );
+
+
+
+
                 //Agregar a hashmap, para que la 2da vez que pase sea mitigado
                 vecesEntro = vecesEntro + 1;
                 //log.info("vecesEntro "+vecesEntro);
@@ -1171,11 +1219,12 @@ public class intentBasedNetworking extends AbstractWebResource {
                     //log.info(""+i+" "+hashPossibleMalicious.get(srcips).get(i));
                     i++;
                 }
+               
 
 
                 //AGREGAR PARTE DE CODIGO DE REDIRIGIR ESTE FLUJO MALIGNO A LOS CANALES MENOS USADOS
 
-                log.info(" SRCID "+ hostsrcId.toString() + " DESTID " + hostdstId.toString());
+                //log.info(" SRCID "+ hostsrcId.toString() + " DESTID " + hostdstId.toString());
                 //para mandar los links, edges, bw, de la topologia
                 //mando la mac source del atacante y de la victima
                 String jsonFlowGoing = "" + getTopologyBandwidth(hostsrcId.toString(), hostdstId.toString());
@@ -1190,9 +1239,12 @@ public class intentBasedNetworking extends AbstractWebResource {
                     auxResponseGoing = responseGoing;
                     // String responseBack = client.target("http://192.168.1.103:8081/shortestPath/").request().post(Entity.entity(jsonFlowBack,MediaType.APPLICATION_JSON),String.class);
                     // auxResponseBack = responseBack;
-                    if (!responseGoing.equals("incomplete")){
+                    //if (!responseGoing.equals("incomplete")){
                         log.info("Response from server responsegoing: {}",responseGoing);
-                    }
+                    //}
+                    //else{
+                        //log.info("No hay response de DIJKSTRA ");
+                    //}
                     // if (!responseBack.equals("incomplete")){
                     //     log.info("Response from server responseback: {}",responseBack);
                     // }
@@ -1237,23 +1289,25 @@ public class intentBasedNetworking extends AbstractWebResource {
                 getSwitchesPorts(switchesHopGoing, hostsrcId, hostdstId, hostdstId.toString());
                 getSwitchesPorts(switchesHopBack, hostdstId, hostsrcId, hostsrcId.toString());
    
-                log.info("CONTIENE KEY? "+hashPossibleMalicious.containsKey(hostSourceIP));
+                //log.info("CONTIENE KEY? "+hashPossibleMalicious.containsKey(hostSourceIP));
 
 
-                String timeoutSourceIP = hostSourceIP;
-                //para que cada cierto tiempo se saque ese flujo sospechoso del hashmap
-                timerHash.schedule(new TimerTask() {
-                        @Override
-                        public void run() {
-                            hashPossibleMalicious.remove(timeoutSourceIP);
-                        }
-                }, timeoutHashMap);
+                // String timeoutSourceIP = hostSourceIP;
+                // //para que cada cierto tiempo se saque ese flujo sospechoso del hashmap
+                // timerHash.schedule(new TimerTask() {
+                //         @Override
+                //         public void run() {
+                //             hashPossibleMalicious.remove(timeoutSourceIP);
+                //         }
+                // }, timeoutHashMap);
 
-                
+                 log.info("NOT DROPPED "+hostSourceIP+ " "+ suspiciousTimes.get(hostSourceIP));
             }
             //Si el atacante ya esta en el hash, entonces mitigar ese flujo, en el switch mas cercano al atacante
-            else if( !tagPred.contains("normal")  && hashPossibleMalicious.containsKey(hostSourceIP) == true){            
-                log.info("TUMBADOOOOOOOOOOOOO ");
+            if( !tagPred.equals("normal")  && suspiciousTimes.get(hostSourceIP) == 3 && tagPred != null ){            
+                log.info("DROPPED "+hostSourceIP+ " "+ suspiciousTimes.get(hostSourceIP));
+
+                vecesEntro = 0;
                 // // cortar trafico (ya funciona)
                 TrafficSelector objectiveSelector = DefaultTrafficSelector.builder()
                         .matchEthSrc(hostsrcId.mac()).matchEthDst(hostdstId.mac()).build();
@@ -1274,26 +1328,59 @@ public class intentBasedNetworking extends AbstractWebResource {
                 flowObjectiveService.forward(hostService.getHost(hostsrcId).location().deviceId(), objective);
 
                 String timeoutSourceIP = hostSourceIP;
+                String auxHostSourceIP = hostSourceIP;
 
-                //para que cada cierto tiempo se saque ese flujo sospechoso del hashmap
-                timerHash.schedule(timerTask = new TimerTask() {
-                        @Override
-                        public void run() {
-                            hashPossibleMalicious.remove(timeoutSourceIP);
-                        }
-                    }, timeoutHashMap);
+                suspiciousTimes.remove( hostSourceIP );
+
+                // //para que cada cierto tiempo se saque ese flujo sospechoso del hashmap
+                // timerHash.schedule(timerTask = new TimerTask() {
+                //         @Override
+                //         public void run() {
+                //             hashPossibleMalicious.remove(timeoutSourceIP);
+                //             suspiciousTimes.remove( auxHostSourceIP );
+                //         }
+                //     }, timeoutHashMap);
                 //DROP_RULE_TIMEOUT
 
+                //trafico normal dropeado
+                if( tagReal.equals("normal")){
+                    legitimateFlowsDropped = legitimateFlowsDropped + 1;                     
 
+                }
+                if(!tagReal.equals("normal")){
+                    maliciousFlowsDropped = maliciousFlowsDropped + 1;
+                }
 
 
 
             }
+
+
+            log.info( "legitimateFlowsDropped: "+ legitimateFlowsDropped );
+            log.info( "maliciousFlowsNotDropped: "+maliciousFlowsNotDropped);
+            log.info( "maliciousFlowsDropped: "+maliciousFlowsDropped);
+            log.info( "normalFlows: "+normalFlows);
+            log.info( "maliciousFlows: "+maliciousFlows);
+            log.info( "totalFlows: "+totalFlows );
+
+            // try {  
+            //     PrintWriter resultsFile = new PrintWriter("results.txt", "UTF-8");
+            //     resultsFile.println("legitimateFlowsDropped: "+ legitimateFlowsDropped);
+            //     resultsFile.println("maliciousFlowsNotDropped: "+maliciousFlowsNotDropped);
+            //     resultsFile.println("totalFlows: "+totalFlows);
+            //     resultsFile.close();
+            // } catch (IOException e) {
+            //     System.out.println("Results file error");
+            //     e.printStackTrace();  
+            // }
+
+
+
 
             }
         }
         else{
-            log.warn("NO HAY RESPUESTA DE FLOWCOLLECTOR ");
+            log.info("Empty flowcollector ");
         }
 
     }
